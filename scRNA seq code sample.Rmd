@@ -1,0 +1,441 @@
+# Import libraries and dataset
+
+## import libraries
+
+```{r}
+# load libraries
+library(pacman)
+pacman::p_load(dplyr, tidyr, ggplot2, Seurat, clusterProfiler, msigdbr, ggrepel,
+               biomaRt, org.Hs.eg.db, annotate, readr)
+```
+
+## import dataset
+
+```{r}
+# load the dataset for tissue repair genes taken from Linehan et al. (2018). 
+tissue_repair_genes <- readr::read_csv('/Users/malikawan/Desktop/scRNA analysis/MAIT cells-PP3 Integrated/Data/tissue_repair_genes.csv',
+                                       col_names = FALSE)
+
+# import 'combined_dataset'
+combined_dataset <- readr::read_csv('/Users/malikawan/Desktop/scRNA analysis/MAIT cells-PP3 Integrated/Data/combined_dataset.csv')
+
+# load 'integrated_0.5' dataset
+integrated_0.5 <- readRDS('/Users/malikawan/Desktop/scRNA analysis/MAIT cells-PP3 Integrated/Data/integrated_0.5.rds')
+
+# load gmt files
+h <- msigdbr(species = "Homo sapiens", category = "H") %>% dplyr::select(gs_name, gene_symbol)
+
+# filter for W2 time point
+blood_w2 <- combined_dataset %>% dplyr::filter(!grepl('w4', orig.ident) & !grepl('m3', orig.ident))
+
+# subset 'trbv20_1_j2_1' from 'integrated_0.5'
+alpha_beta <- subset(integrated_0.5, subset = barcode %in% blood_w2$barcode)
+
+# set the default assay
+DefaultAssay(alpha_beta) <- 'integrated'
+
+# run the standard workflow for visualization and clustering
+alpha_beta <- Seurat::ScaleData(alpha_beta, verbose = FALSE)
+alpha_beta <- RunPCA(alpha_beta, npcs = 10, verbose = FALSE)
+alpha_beta <- FindNeighbors(alpha_beta, reduction = 'pca', dims = 1:10)
+alpha_beta <- FindClusters(alpha_beta, resolution = 0.5)
+alpha_beta <- RunUMAP(alpha_beta, reduction = 'pca', dims = 1:10)
+
+# set the default assay as RNA
+DefaultAssay(alpha_beta) <- "RNA"
+
+# set identity classes to "tissue" column
+Idents(alpha_beta) <- "tissue"
+```
+
+# tumor vs blood
+
+```{r, fig.width=20, fig.height=10}
+# find markers for tumor vs blood
+alpha_beta_markers_tumor_blood_w2 <- FindMarkers(alpha_beta, 
+                                                 ident.1 = 'tumor', 
+                                                 ident.2 = 'blood',
+                                                 min.pct = 0.25,
+                                                 logfc.threshold = 0.25)
+
+# create a column called 'diffexpressed' with values 'NO'
+alpha_beta_markers_tumor_blood_w2$diffexpressed <- "NO"
+
+# for 'avg_log2FC > 0.5' and 'p_val < 0.05', change 'diffexpressed' values to 'UP'
+alpha_beta_markers_tumor_blood_w2$diffexpressed[alpha_beta_markers_tumor_blood_w2$avg_log2FC > 0.5 & alpha_beta_markers_tumor_blood_w2$p_val < 0.05] <- "UP"
+
+# for 'avg_log2FC < -0.5' and 'p_val < 0.05', change 'diffexpressed' values to 'DOWN'
+alpha_beta_markers_tumor_blood_w2$diffexpressed[alpha_beta_markers_tumor_blood_w2$avg_log2FC < -0.5 & alpha_beta_markers_tumor_blood_w2$p_val < 0.05] <- "DOWN"
+
+# create a column called 'delabel' with 'NA' values
+alpha_beta_markers_tumor_blood_w2$delabel <- NA
+
+# create a column called 'gene_symbol' which has the rownames values
+alpha_beta_markers_tumor_blood_w2$gene_symbol <- rownames(alpha_beta_markers_tumor_blood_w2)
+
+# label the values of 'delabel' with names of genes which are either 'UP' or 'DOWN'
+alpha_beta_markers_tumor_blood_w2$delabel[alpha_beta_markers_tumor_blood_w2$diffexpressed != "NO"] <- alpha_beta_markers_tumor_blood_w2$gene_symbol[alpha_beta_markers_tumor_blood_w2$diffexpressed != "NO"]
+
+# make a copy
+w2_tumor_blood <- alpha_beta_markers_tumor_blood_w2
+
+# add columns
+w2_tumor_blood$comparison <- 'tumor_blood'
+w2_tumor_blood$time <- 'week_2'
+```
+
+## Volcano Plot
+
+```{r, fig.width=20, fig.height=10}
+# color vector to use
+mycolors <- c("blue", "red", "black")
+
+# name the color vector with the gene regulation
+names(mycolors) <- c("DOWN", "UP", "NO")
+
+# visualize the volcano plot
+ggplot(data = alpha_beta_markers_tumor_blood_w2, 
+       aes(x = avg_log2FC, y = -log10(p_val_adj), col = diffexpressed, label = delabel)) + 
+       # geom point     
+       geom_point() + 
+       # select the color scale to use     
+       scale_colour_manual(values = mycolors) +
+       # use geom text to label the geom points     
+       geom_text_repel() +
+       # select the geom theme     
+       theme_classic() + theme_light() +
+       # select the theme size     
+       theme_bw(base_size = 12) +
+       # set the horizontal cutoff line     
+       geom_hline(yintercept = -log10(0.05), col = 'red') +
+       # set the vertical lines  
+       geom_vline(xintercept = c(-0.5, 0.5), col = 'red') +
+       # set the theme parameters     
+       theme(axis.text.x = element_text(size = 12, vjust = 0.5, face = "bold"),
+             axis.title.x = element_text(size = 15, vjust = -4, face = "bold"),
+             axis.text.y = element_text(size = 12, face = 'bold'),
+             axis.title.y = element_text(size = 15, vjust = 9, face = "bold"),
+             panel.grid.major = element_blank(),
+             panel.grid.minor = element_blank(),
+             plot.margin = margin(c(0.5,0.5,0.8,1), unit = "in"),
+             plot.title = element_text(hjust = 0.5, size = 20, face = "bold")) +
+       # label the figure     
+       labs(title = paste("Volcano Plot of Differentially Expressed Genes",
+                          "\n",
+                          "Week 2",
+                          "\n",
+                          "Tumor vs Blood"),
+            x = "Average Log 2 Fold Change",
+            y = "-log10 (p_val_adj)",
+            colour = paste("Avg log2 FC > 0.5", 
+                           "\n",
+                           "\n",
+                           "p value < 0.05"))
+```
+
+## GSEA
+
+```{r}
+# prepare for gsea analysis
+w2_tumor_blood_gsea <- w2_tumor_blood %>% dplyr::select(gene_symbol, avg_log2FC)
+
+# construct a named vector
+w2_tumor_blood_logfc <- w2_tumor_blood_gsea$avg_log2FC
+names(w2_tumor_blood_logfc) <- as.character(w2_tumor_blood_gsea$gene_symbol)
+w2_tumor_blood_logfc <- sort(w2_tumor_blood_logfc, decreasing = TRUE)
+
+# h
+dge_res_h <- clusterProfiler::GSEA(w2_tumor_blood_logfc, TERM2GENE = h, verbose = FALSE)
+dge_df_h <- as_tibble(dge_res_h@result)
+```
+
+## h
+
+```{r, fig.width=20, fig.height=10}
+# label for NES
+dge_df_h <- dge_df_h %>% dplyr::mutate(phenotype = case_when(
+  NES > 0 ~ "Upregulated in Tumor",
+  NES < 0 ~ "Downregulated in Tumor"))
+
+# 'bubble plot'
+ggplot(dge_df_h, aes(x = phenotype, y = ID)) +
+  geom_point(aes(size = setSize, color = NES, alpha = -log10(p.adjust))) +
+  scale_color_gradient(low = 'blue', high = 'red') +
+  theme_bw()
+```
+
+## tissue repair genes
+
+```{r, fig.width=20, fig.height=10}
+# repair genes in blood vs normal
+genes_present <- subset(w2_tumor_blood, gene_symbol %in% tissue_repair_genes$X1)
+
+genes_present <- genes_present %>% dplyr::filter(p_val_adj < 0.05)
+```
+
+# blood vs normal
+
+```{r}
+# find markers for tumor vs blood
+alpha_beta_markers_blood_normal_w2 <- FindMarkers(alpha_beta, 
+                                                  ident.1 = 'blood', 
+                                                  ident.2 = 'normal',
+                                                  min.pct = 0.25,
+                                                  logfc.threshold = 0.25)
+
+# create a column called 'diffexpressed' with values 'NO'
+alpha_beta_markers_blood_normal_w2$diffexpressed <- "NO"
+
+# for 'avg_log2FC > 0.5' and 'p_val < 0.05', change 'diffexpressed' values to 'UP'
+alpha_beta_markers_blood_normal_w2$diffexpressed[alpha_beta_markers_blood_normal_w2$avg_log2FC > 0.5 & alpha_beta_markers_blood_normal_w2$p_val < 0.05] <- "UP"
+
+# for 'avg_log2FC < -0.5' and 'p_val < 0.05', change 'diffexpressed' values to 'DOWN'
+alpha_beta_markers_blood_normal_w2$diffexpressed[alpha_beta_markers_blood_normal_w2$avg_log2FC < -0.5 & alpha_beta_markers_blood_normal_w2$p_val < 0.05] <- "DOWN"
+
+# create a column called 'delabel' with 'NA' values
+alpha_beta_markers_blood_normal_w2$delabel <- NA
+
+# create a column called 'gene_symbol' which has the rownames values
+alpha_beta_markers_blood_normal_w2$gene_symbol <- rownames(alpha_beta_markers_blood_normal_w2)
+
+# label the values of 'delabel' with names of genes which are either 'UP' or 'DOWN'
+alpha_beta_markers_blood_normal_w2$delabel[alpha_beta_markers_blood_normal_w2$diffexpressed != "NO"] <- alpha_beta_markers_blood_normal_w2$gene_symbol[alpha_beta_markers_blood_normal_w2$diffexpressed != "NO"]
+
+# make a copy
+w2_blood_normal <- alpha_beta_markers_blood_normal_w2
+
+# add columns
+w2_blood_normal$comparison <- 'blood_normal'
+w2_blood_normal$time <- 'week_2'
+```
+
+## Volcano Plot
+
+```{r, fig.width=20, fig.height=10}
+# color vector to use
+mycolors <- c("blue", "red", "black")
+
+# name the color vector with the gene regulation
+names(mycolors) <- c("DOWN", "UP", "NO")
+
+# visualize the volcano plot
+ggplot(data = alpha_beta_markers_blood_normal_w2, 
+       aes(x = avg_log2FC, y = -log10(p_val_adj), col = diffexpressed, label = delabel)) + 
+       # geom point     
+       geom_point() + 
+       # select the color scale to use     
+       scale_colour_manual(values = mycolors) +
+       # use geom text to label the geom points     
+       geom_text_repel() +
+       # select the geom theme     
+       theme_classic() + theme_light() +
+       # select the theme size     
+       theme_bw(base_size = 12) +
+       # set the horizontal cutoff line     
+       geom_hline(yintercept = -log10(0.05), col = 'red') +
+       # set the vertical lines  
+       geom_vline(xintercept = c(-0.5, 0.5), col = 'red') +
+       # set the theme parameters     
+       theme(axis.text.x = element_text(size = 12, vjust = 0.5, face = "bold"),
+             axis.title.x = element_text(size = 15, vjust = -4, face = "bold"),
+             axis.text.y = element_text(size = 12, face = 'bold'),
+             axis.title.y = element_text(size = 15, vjust = 9, face = "bold"),
+             panel.grid.major = element_blank(),
+             panel.grid.minor = element_blank(),
+             plot.margin = margin(c(0.5,0.5,0.8,1), unit = "in"),
+             plot.title = element_text(hjust = 0.5, size = 20, face = "bold")) +
+       # label the figure     
+       labs(title = paste("Volcano Plot of Differentially Expressed Genes",
+                          "\n",
+                          "Week 2",
+                          "\n",
+                          "Blood vs Normal"),
+            x = "Average Log 2 Fold Change",
+            y = "-log10 (p_val_adj)",
+            colour = paste("Avg log2 FC > 0.5", 
+                           "\n",
+                           "\n",
+                           "p value < 0.05"))
+```
+
+## GSEA
+
+```{r}
+# prepare for gsea analysis
+w2_blood_normal_gsea <- w2_blood_normal %>% dplyr::select(gene_symbol, avg_log2FC)
+
+# construct a named vector
+w2_blood_normal_logfc <- w2_blood_normal_gsea$avg_log2FC
+names(w2_blood_normal_logfc) <- as.character(w2_blood_normal_gsea$gene_symbol)
+w2_blood_normal_logfc <- sort(w2_blood_normal_logfc, decreasing = TRUE)
+
+# h
+dge_res_h <- clusterProfiler::GSEA(w2_blood_normal_logfc, TERM2GENE = h, verbose = FALSE)
+dge_df_h <- as_tibble(dge_res_h@result)
+```
+
+## h
+
+```{r, fig.width=20, fig.height=10}
+# label for NES
+dge_df_h <- dge_df_h %>% dplyr::mutate(phenotype = case_when(
+  NES > 0 ~ "Upregulated in Blood",
+  NES < 0 ~ "Downregulated in Blood"))
+
+# 'bubble plot'
+ggplot(dge_df_h, aes(x = phenotype, y = ID)) +
+  geom_point(aes(size = setSize, color = NES, alpha = -log10(p.adjust))) +
+  scale_color_gradient(low = 'blue', high = 'red') +
+  theme_bw()
+```
+
+# tissue repair genes
+
+```{r, fig.width=20, fig.height=10}
+# repair genes in blood vs normal
+genes_present <- subset(w2_blood_normal, gene_symbol %in% tissue_repair_genes$X1)
+```
+
+## blood vs tissues
+
+```{r}
+# subset 'trbv20_1_j2_1' from 'integrated_0.5'
+alpha_beta <- subset(integrated_0.5, subset = barcode %in% blood_w2$barcode)
+
+# set the default assay
+DefaultAssay(alpha_beta) <- 'integrated'
+
+# run the standard workflow for visualization and clustering
+alpha_beta <- ScaleData(alpha_beta, verbose = FALSE)
+alpha_beta <- RunPCA(alpha_beta, npcs = 10, verbose = FALSE)
+alpha_beta <- FindNeighbors(alpha_beta, reduction = 'pca', dims = 1:10)
+alpha_beta <- FindClusters(alpha_beta, resolution = 0.5)
+alpha_beta <- RunUMAP(alpha_beta, reduction = 'pca', dims = 1:10)
+
+# set the default assay as RNA
+DefaultAssay(alpha_beta) <- "RNA"
+
+# set identity classes to "tissue" column
+Idents(alpha_beta) <- "tissue"
+
+# find markers for tumor vs blood
+alpha_beta_markers_blood_w2 <- FindMarkers(alpha_beta, 
+                                           ident.1 = 'blood',
+                                           min.pct = 0.25,
+                                           logfc.threshold = 0.25)
+
+# create a column called 'diffexpressed' with values 'NO'
+alpha_beta_markers_blood_w2$diffexpressed <- "NO"
+
+# for 'avg_log2FC > 0.5' and 'p_val < 0.05', change 'diffexpressed' values to 'UP'
+alpha_beta_markers_blood_w2$diffexpressed[alpha_beta_markers_blood_w2$avg_log2FC > 0.5 & alpha_beta_markers_blood_w2$p_val < 0.05] <- "UP"
+
+# for 'avg_log2FC < -0.5' and 'p_val < 0.05', change 'diffexpressed' values to 'DOWN'
+alpha_beta_markers_blood_w2$diffexpressed[alpha_beta_markers_blood_w2$avg_log2FC < -0.5 & alpha_beta_markers_blood_w2$p_val < 0.05] <- "DOWN"
+
+# create a column called 'delabel' with 'NA' values
+alpha_beta_markers_blood_w2$delabel <- NA
+
+# create a column called 'gene_symbol' which has the rownames values
+alpha_beta_markers_blood_w2$gene_symbol <- rownames(alpha_beta_markers_blood_w2)
+
+# label the values of 'delabel' with names of genes which are either 'UP' or 'DOWN'
+alpha_beta_markers_blood_w2$delabel[alpha_beta_markers_blood_w2$diffexpressed != "NO"] <- alpha_beta_markers_blood_w2$gene_symbol[alpha_beta_markers_blood_w2$diffexpressed != "NO"]
+
+# make a copy
+w2_blood_tissue <- alpha_beta_markers_blood_w2
+
+# add columns
+w2_blood_tissue$comparison <- 'blood_tissue'
+w2_blood_tissue$time <- 'week_2'
+```
+
+### Volcano Plot
+
+```{r, fig.width=20, fig.height=10}
+# color vector to use
+mycolors <- c("blue", "red", "black")
+
+# name the color vector with the gene regulation
+names(mycolors) <- c("DOWN", "UP", "NO")
+
+# visualize the volcano plot
+ggplot(data = alpha_beta_markers_blood_w2, 
+       aes(x = avg_log2FC, y = -log10(p_val_adj), col = diffexpressed, label = delabel)) + 
+       # geom point     
+       geom_point() + 
+       # select the color scale to use     
+       scale_colour_manual(values = mycolors) +
+       # use geom text to label the geom points     
+       geom_text_repel() +
+       # select the geom theme     
+       theme_classic() + theme_light() +
+       # select the theme size     
+       theme_bw(base_size = 12) +
+       # set the horizontal cutoff line     
+       geom_hline(yintercept = -log10(0.05), col = 'red') +
+       # set the vertical lines  
+       geom_vline(xintercept = c(-0.5, 0.5), col = 'red') +
+       # set the theme parameters     
+       theme(axis.text.x = element_text(size = 12, vjust = 0.5, face = "bold"),
+             axis.title.x = element_text(size = 15, vjust = -4, face = "bold"),
+             axis.text.y = element_text(size = 12, face = 'bold'),
+             axis.title.y = element_text(size = 15, vjust = 9, face = "bold"),
+             panel.grid.major = element_blank(),
+             panel.grid.minor = element_blank(),
+             plot.margin = margin(c(0.5,0.5,0.8,1), unit = "in"),
+             plot.title = element_text(hjust = 0.5, size = 20, face = "bold")) +
+       # label the figure     
+       labs(title = paste("Volcano Plot of Differentially Expressed Genes",
+                          "\n",
+                          "Week 2",
+                          "\n",
+                          "Blood vs Tissues"),
+            x = "Average Log 2 Fold Change",
+            y = "-log10 (p_val_adj)",
+            colour = paste("Avg log2 FC > 0.5", 
+                           "\n",
+                           "\n",
+                           "p value < 0.05"))
+```
+
+### GSEA
+
+```{r}
+# prepare for gsea analysis
+w2_blood_tissue_gsea <- w2_blood_tissue %>% dplyr::select(gene_symbol, avg_log2FC)
+
+# construct a named vector
+w2_blood_tissue_logfc <- w2_blood_tissue_gsea$avg_log2FC
+names(w2_blood_tissue_logfc) <- as.character(w2_blood_tissue_gsea$gene_symbol)
+w2_blood_tissue_logfc <- sort(w2_blood_tissue_logfc, decreasing = TRUE)
+
+# h
+dge_res_h <- clusterProfiler::GSEA(w2_blood_tissue_logfc, TERM2GENE = h, verbose = FALSE)
+dge_df_h <- as_tibble(dge_res_h@result)
+```
+
+### h
+
+```{r, fig.width=20, fig.height=10}
+# label for NES
+dge_df_h <- dge_df_h %>% dplyr::mutate(phenotype = case_when(
+  NES > 0 ~ "Upregulated in Blood",
+  NES < 0 ~ "Downregulated in Blood"))
+
+# 'bubble plot'
+ggplot(dge_df_h, aes(x = phenotype, y = ID)) +
+  geom_point(aes(size = setSize, color = NES, alpha = -log10(p.adjust))) +
+  scale_color_gradient(low = 'blue', high = 'red') +
+  theme_bw()
+```
+
+```{r, fig.width=20, fig.height=10}
+# repair genes in blood vs normal
+genes_present <- subset(w2_blood_tissue, gene_symbol %in% tissue_repair_genes$X1)
+
+genes_present <- genes_present %>% dplyr::filter(p_val_adj < 0.05)
+```
+
+
+
